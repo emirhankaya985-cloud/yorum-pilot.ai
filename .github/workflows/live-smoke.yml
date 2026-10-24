@@ -1,0 +1,41 @@
+name: Live demo smoke
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/live-smoke.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  public-demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - name: Backend health endpoint
+        run: |
+          curl --fail-with-body --retry 16 --retry-delay 10 --retry-all-errors --max-time 40 --silent --show-error \
+            "https://yorumpilot-api.onrender.com/healthz" -o /tmp/api-health.json
+          python - <<'PY'
+          import json
+          with open('/tmp/api-health.json') as f: data=json.load(f)
+          assert data.get('status')=='ok', data
+          assert data.get('google_mode')=='mock', data
+          print('Backend healthy and Google remains MOCK_ONLY')
+          PY
+      - name: Frontend homepage
+        run: |
+          curl --fail-with-body --retry 16 --retry-delay 10 --retry-all-errors --max-time 40 --silent --show-error \
+            "https://yorumpilot-web.onrender.com/" -o /tmp/frontend.html
+          grep -iq "yorumpilot" /tmp/frontend.html
+          echo 'Frontend homepage HTTP 200 with YorumPilot brand'
+      - name: Frontend API proxy
+        run: |
+          curl --fail-with-body --retry 16 --retry-delay 10 --retry-all-errors --max-time 40 --silent --show-error \
+            "https://yorumpilot-web.onrender.com/api/system/status" -o /tmp/system-status.json
+          python - <<'PY'
+          import json
+          with open('/tmp/system-status.json') as f: data=json.load(f)
+          assert data.get('mode')=='DEMO', data
+          assert data.get('live_google_publish_enabled') is False, data
+          print('Same-origin API proxy healthy, real Google publishing disabled')
+          PY
