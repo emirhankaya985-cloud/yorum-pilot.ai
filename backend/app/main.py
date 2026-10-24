@@ -1,5 +1,7 @@
 """YorumPilot AI demo-ready REST API. All data in mock mode is synthetic."""
 from contextlib import asynccontextmanager
+import asyncio
+import logging
 from fastapi import FastAPI, Depends, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -16,13 +18,24 @@ from .ai import RuleBasedProvider
 from .google import MockGoogleAdapter, PendingGoogleAdapter, GoogleIntegrationPending
 from .ingestion import ingest
 from .lifecycle import purge_expired
+from .maintenance import cleanup_once, cleanup_loop, stop_cleanup
+from .rate_limit import throttle
+from .llm import generate_draft, AIUnavailable, provider_status
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     if get_settings().environment != 'production':
         Base.metadata.create_all(bind=engine)
-    yield
+    try:
+        await asyncio.to_thread(cleanup_once)
+    except Exception:
+        logging.getLogger(__name__).exception('Initial TTL cleanup failed')
+    task = asyncio.create_task(cleanup_loop())
+    try:
+        yield
+    finally:
+        await stop_cleanup(task)
 
 
 app = FastAPI(title='YorumPilot AI API', version='0.1.0', lifespan=lifespan)
@@ -80,11 +93,14 @@ def health():
 def status():
     return {'mode': 'DEMO' if get_settings().google_mode == 'mock' else 'GOOGLE_INTEGRATION_PENDING',
             'google_integration': 'MOCK_ONLY' if get_settings().google_mode == 'mock' else 'API_ACCESS_PENDING',
-            'live_google_publish_enabled': False, 'ai_provider': 'rules_mock'}
+            'live_google_publish_enabled': False, 'ai_provider': provider_status(),
+            'database_mode': 'external_postgresql' if get_settings().database_url.startswith('postgresql') else 'ephemeral_sqlite',
+            'customer_data_ready': False}
 
 
 @app.post('/api/auth/register', status_code=201)
-def register(data: Register, response: Response, db: Session = Depends(get_db)):
+def register(data: Register, response: Response, request: Request, db: Session = Depends(get_db)):
+    throttle(request, 'register', limit=20, seconds=60)
     if db.scalar(select(User.id).where(User.email == data.email)):
         raise HTTPException(409, 'E-posta zaten kayıtlı')
     user = User(email=data.email, password_hash=hash_password(data.password))
@@ -111,7 +127,8 @@ def register(data: Register, response: Response, db: Session = Depends(get_db)):
 
 
 @app.post('/api/auth/login')
-def login(data: Login, response: Response, db: Session = Depends(get_db)):
+def login(data: Login, response: Response, request: Request, db: Session = Depends(get_db)):
+    throttle(request, 'login', limit=30, seconds=60)
     user = db.scalar(select(User).where(User.email == data.email.strip().lower()))
     if not user or not verify_password(user.password_hash, data.password):
         raise HTTPException(401,'E-posta veya şifre hatalı')
@@ -185,7 +202,10 @@ def regenerate(org_id: str, review_id: str, user: User = Depends(editable), db: 
     review = review_access(db,user,org_id,review_id,('owner','admin','editor'))
     if review.status == 'simulated_published':
         raise HTTPException(409,'Simülasyonda yayımlanmış yanıt değiştirilemez')
-    analysis = RuleBasedProvider().analyze(review.content, review.stars)
+    try:
+        analysis = generate_draft(review.content, review.stars)
+    except AIUnavailable:
+        raise HTTPException(503, 'AI sağlayıcısı kullanılamıyor; önceki taslak korundu') from None
     review.draft.text = analysis.reply_draft
     review.draft.approved_by = None
     review.draft.approved_at = None

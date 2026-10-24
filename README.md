@@ -9,9 +9,9 @@ Google Business Profile yorumları için planlanan abonelik tabanlı SaaS ürün
 - ✅ Çok müşterili veri ayrımı, roller (owner/admin/editor/viewer) ve zorunlu backend kontrolleri
 - ✅ Tamamen sentetik yorumlarla demo, offline kural tabanlı analiz ve yanıt taslağı
 - ✅ Taslak düzenleme, yeniden üretme, açık onay, idempotent **yalnızca demo** yayımlama simülasyonu
-- ✅ 28 günlük önbellek süre sınırı, süresi dolan veriye erişimin engellenmesi, temizleme aracı (zamanlanmış temizleme henüz devrede değil)
+- ✅ 28 günlük önbellek süre sınırı, süresi dolan veriye erişimin engellenmesi, temizleme aracı (servis açıkken başlangıçta ve her 6 saatte otomatik temizleme)
 - ✅ Responsive Next.js 16.4.3 landing, giriş/kayıt, gerçek API bağlantılı dashboard, yorum editörü, ayarlar
-- ✅ 19 backend otomatik testi, CI workflow, Docker Compose, Render blueprint taslağı
+- ✅ 24 backend otomatik testi, CI workflow, Docker Compose, Render blueprint taslağı
 - ⏳ Google API erişimi ve OAuth, Pub/Sub, gerçek yayımlama: ETKİN DEĞİL
 - ✅ Telegram/ntfy taşıyıcı yardımcıları ve OAuth PKCE/state araçları (offline testli; hesap eşleştirme/gerçek entegrasyon devre dışı)
 - ⏳ Gerçek Telegram/ntfy bağlantısı, LLM provider, abonelik tahsilatı, hesap silme, çoklu kullanıcı daveti: UYGULANMADI
@@ -78,3 +78,11 @@ npm run build
 ## Değişiklik kaydı
 
 24 Ekim 2026 — İlk offline MVP. Bütün açık ve yapılmamış parçalar güvenli biçimde işaretlenmiştir.
+
+
+## Ek güvenli demo altyapısı
+
+- NVIDIA NIM draft sağlayıcısı kodu hazırdır; yalnızca sunucuya `AI_PROVIDER=nvidia` ve `NVIDIA_API_KEY` girilirse taslak yeniden üretme kullanır. Model varsayılan `openai/gpt-oss-20b`. Anahtar olmadan gerçek AI isteği yapılmaz.
+- AI hata/429/bozuk cevap durumunda 503 üretilir ve mevcut taslak korunur. İnsan onayı olmadan gerçek Google yanıtı yayımlanmaz.
+- Kayıt/giriş için tek süreçli demo hız sınırı; kritik müşteri operasyonları için dağıtık limit sistemi hâlâ gereklidir.
+- Render Free SQLite kalıcı değildir. Ayrı Neon Free PostgreSQL yapılandırması yapılana kadar gerçek müşteri verisi girmeyin.
