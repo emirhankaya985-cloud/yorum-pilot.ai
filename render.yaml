@@ -1,4 +1,6 @@
-# Blueprint TEMPLATE ONLY: review credentials, costs and service names before deployment.
+# Zero-cost demo Blueprint template, not automatically applied to existing services.
+# A dedicated external Neon Free DATABASE_URL must be provided securely in Render.
+# Never attach CareerHunter's database or enable paid services.
 services:
   - type: web
     name: yorumpilot-api
@@ -13,12 +15,12 @@ services:
         value: production
       - key: GOOGLE_MODE
         value: mock
+      - key: AI_PROVIDER
+        value: rules
       - key: SECRET_KEY
         generateValue: true
       - key: DATABASE_URL
-        fromDatabase:
-          name: yorumpilot-db
-          property: connectionString
+        sync: false
       - key: FRONTEND_URL
         value: https://yorumpilot-web.onrender.com
   - type: web
@@ -31,10 +33,3 @@ services:
     envVars:
       - key: BACKEND_INTERNAL_URL
         value: https://yorumpilot-api.onrender.com
-
-databases:
-  - name: yorumpilot-db
-    plan: free
-    region: frankfurt
-    databaseName: yorumpilot
-    user: yorumpilot

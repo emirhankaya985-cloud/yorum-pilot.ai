@@ -2,7 +2,11 @@ name: Live demo smoke
 on:
   push:
     branches: [main]
-    paths: ['.github/workflows/live-smoke.yml']
+    paths:
+      - '.github/workflows/live-smoke.yml'
+      - 'backend/app/**'
+      - 'backend/tests/**'
+      - 'frontend/**'
   workflow_dispatch:
 permissions:
   contents: read
