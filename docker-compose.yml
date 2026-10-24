@@ -1,0 +1,34 @@
+services:
+  db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: yp
+      POSTGRES_PASSWORD: dev-password-do-not-use-in-production
+      POSTGRES_DB: yorumpilot
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U yp"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - pgdata:/var/lib/postgresql
+  api:
+    build: ./backend
+    ports: ['8000:8000']
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+psycopg://yp:dev-password-do-not-use-in-production@db:5432/yorumpilot
+      SECRET_KEY: local-development-only-change-me
+      FRONTEND_URL: http://localhost:3000
+      GOOGLE_MODE: mock
+    depends_on:
+      db:
+        condition: service_healthy
+  web:
+    build: ./frontend
+    ports: ['3000:3000']
+    environment:
+      BACKEND_INTERNAL_URL: http://api:8000
+    depends_on: [api]
+volumes:
+  pgdata:

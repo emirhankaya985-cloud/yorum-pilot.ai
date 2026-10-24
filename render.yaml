@@ -1,0 +1,40 @@
+# Blueprint TEMPLATE ONLY: review credentials, costs and service names before deployment.
+services:
+  - type: web
+    name: yorumpilot-api
+    runtime: docker
+    plan: free
+    region: frankfurt
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: GOOGLE_MODE
+        value: mock
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: yorumpilot-db
+          property: connectionString
+      - key: FRONTEND_URL
+        value: https://yorumpilot-web.onrender.com
+  - type: web
+    name: yorumpilot-web
+    runtime: docker
+    plan: free
+    region: frankfurt
+    rootDir: frontend
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: BACKEND_INTERNAL_URL
+        value: https://yorumpilot-api.onrender.com
+
+databases:
+  - name: yorumpilot-db
+    plan: free
+    region: frankfurt
+    databaseName: yorumpilot
+    user: yorumpilot
