@@ -39,3 +39,47 @@ jobs:
           assert data.get('live_google_publish_enabled') is False, data
           print('Same-origin API proxy healthy, real Google publishing disabled')
           PY
+
+      - name: End-to-end synthetic account, dashboard and approval
+        env:
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          python - <<'PY'
+          import http.cookiejar, json, os, secrets, urllib.request
+          cookies = http.cookiejar.CookieJar()
+          client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookies))
+          base = "https://yorumpilot-web.onrender.com/api"
+          def call(method, path, payload=None, write=False):
+              headers = {}
+              body = None if payload is None else json.dumps(payload).encode()
+              if payload is not None: headers['Content-Type'] = 'application/json'
+              if write:
+                  csrf = next((c.value for c in cookies if c.name == 'yp_csrf'), '')
+                  assert csrf, "CSRF cookie not set"
+                  headers['X-CSRF-Token'] = csrf
+              req = urllib.request.Request(base+path,data=body,headers=headers,method=method)
+              with client.open(req,timeout=90) as response:
+                  return json.load(response)
+          identity = call('POST','/auth/register',{
+              'email': 'ci-'+os.environ['RUN_ID']+'@example.invalid',
+              'password': secrets.token_urlsafe(24),
+              'organization_name': 'YorumPilot CI Sentetik İşletme'
+          })
+          org = identity['organization_id']
+          user = call('GET','/me')
+          assert any(o['id']==org for o in user['organizations'])
+          dashboard = call('GET',f'/organizations/{org}/dashboard')
+          assert dashboard['review_count']==3 and dashboard['source']=='DEMO_DATA', dashboard
+          reviews = call('GET',f'/organizations/{org}/reviews')
+          assert len(reviews)==3 and all(x['source']=='DEMO_DATA' for x in reviews)
+          item = reviews[0]['id']
+          assert call('POST',f'/organizations/{org}/reviews/{item}/approve',write=True)['status']=='approved'
+          key='ci-key-'+os.environ['RUN_ID']
+          published=call('POST',f'/organizations/{org}/reviews/{item}/publish',
+              {'confirm':True,'idempotency_key':key},write=True)
+          assert published['status']=='simulated_published' and not published['live_google_publish']
+          repeated=call('POST',f'/organizations/{org}/reviews/{item}/publish',
+              {'confirm':True,'idempotency_key':key},write=True)
+          assert repeated['duplicate'] is True
+          print('E2E demo: register -> dashboard -> review approval -> simulated publish -> dedupe: PASS')
+          PY
