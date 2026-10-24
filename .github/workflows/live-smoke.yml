@@ -41,7 +41,10 @@ jobs:
           with open('/tmp/system-status.json') as f: data=json.load(f)
           assert data.get('mode')=='DEMO', data
           assert data.get('live_google_publish_enabled') is False, data
-          print('Same-origin API proxy healthy, real Google publishing disabled')
+          assert data.get('database_mode') == 'external_postgresql', data
+          assert data.get('ai_provider') == 'rules_mock', data
+          assert data.get('customer_data_ready') is False, data
+          print('Proxy/Neon persistence configuration PASS; Google publishing disabled; paid AI off')
           PY
 
       - name: End-to-end synthetic account, dashboard and approval
@@ -49,7 +52,7 @@ jobs:
           RUN_ID: ${{ github.run_id }}
         run: |
           python - <<'PY'
-          import http.cookiejar, json, os, secrets, urllib.request
+          import http.cookiejar, json, os, secrets, urllib.request, urllib.error
           cookies = http.cookiejar.CookieJar()
           client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookies))
           base = "https://yorumpilot-web.onrender.com/api"
@@ -64,6 +67,12 @@ jobs:
               req = urllib.request.Request(base+path,data=body,headers=headers,method=method)
               with client.open(req,timeout=90) as response:
                   return json.load(response)
+          # Authentication must be required before any tenant records are disclosed
+          try:
+              call('GET','/me')
+              raise AssertionError('anonymous access should fail')
+          except urllib.error.HTTPError as exc:
+              assert exc.code == 401, exc.code
           identity = call('POST','/auth/register',{
               'email': 'ci-'+os.environ['RUN_ID']+'@example.invalid',
               'password': secrets.token_urlsafe(24),
@@ -85,5 +94,5 @@ jobs:
           repeated=call('POST',f'/organizations/{org}/reviews/{item}/publish',
               {'confirm':True,'idempotency_key':key},write=True)
           assert repeated['duplicate'] is True
-          print('E2E demo: register -> dashboard -> review approval -> simulated publish -> dedupe: PASS')
+          print('E2E demo: anonymous blocked -> register -> Neon dashboard -> approval -> simulated publish -> dedupe: PASS')
           PY
