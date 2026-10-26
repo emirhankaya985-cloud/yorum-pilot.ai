@@ -9,7 +9,7 @@ import logging
 import os
 import re
 import secrets
-from datetime import timedelta
+from datetime import timedelta, timezone
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -29,6 +29,14 @@ _bot_username = ''
 BOT_URL = 'https://yorumpilot-api.onrender.com/api/telegram/webhook'
 LINK_TTL_MINUTES = 10
 MAX_UPDATE_BYTES = 12000
+
+
+def _is_expired(value) -> bool:
+    # SQLite test DB strips timezone metadata while Neon PostgreSQL retains it.
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value <= utcnow()
+
 
 
 def _token() -> str:
@@ -169,7 +177,7 @@ async def test_message(org_id: str, request: Request, db: Session = Depends(get_
 
 def _apply_action(db: Session, review_id: str, action: str, telegram_user_id: str, chat_id: str) -> str:
     review = db.get(Review, review_id)
-    if not review or review.expires_at <= utcnow():
+    if not review or _is_expired(review.expires_at):
         return 'Yorum bulunamadı veya süresi doldu.'
     binding = db.get(TelegramBinding, review.organization_id)
     if not binding or not binding.enabled or binding.telegram_user_id != telegram_user_id or binding.chat_id != chat_id:
@@ -218,7 +226,7 @@ async def _process_message(db: Session, message: dict):
         code = text.split(' ',1)[1].strip()
         digest = hashlib.sha256(code.encode('utf-8')).hexdigest()
         pair = db.get(TelegramPairing, digest)
-        if pair and pair.used_at is None and pair.expires_at > utcnow():
+        if pair and pair.used_at is None and not _is_expired(pair.expires_at):
             member = db.scalar(select(Membership).where(
                 Membership.organization_id == pair.organization_id,
                 Membership.user_id == pair.user_id,
