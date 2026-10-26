@@ -44,6 +44,7 @@ jobs:
           assert data.get('database_mode') == 'external_postgresql', data
           assert data.get('ai_provider') == 'rules_mock', data
           assert data.get('customer_data_ready') is False, data
+          print('TELEGRAM_BOT_CONFIGURED=' + str(data.get('telegram_bot_configured', False)).lower())
           print('Proxy/Neon persistence configuration PASS; Google publishing disabled; paid AI off')
           PY
 
