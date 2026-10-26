@@ -97,3 +97,29 @@ class Audit(Base):
     action: Mapped[str] = mapped_column(String(48))
     object_id: Mapped[str] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+class TelegramPairing(Base):
+    """A single-use code digest; raw code never enters persistent storage."""
+    __tablename__ = 'telegram_pairings'
+    digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+    organization_id: Mapped[str] = mapped_column(ForeignKey('organizations.id'), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey('users.id'))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class TelegramBinding(Base):
+    __tablename__ = 'telegram_bindings'
+    organization_id: Mapped[str] = mapped_column(ForeignKey('organizations.id'), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey('users.id'))
+    telegram_user_id: Mapped[str] = mapped_column(String(28))
+    chat_id: Mapped[str] = mapped_column(String(28))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    linked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class TelegramUpdate(Base):
+    """Incoming Telegram update_id de-duplication survives Render restarts."""
+    __tablename__ = 'telegram_updates'
+    update_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

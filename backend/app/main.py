@@ -21,6 +21,7 @@ from .lifecycle import purge_expired
 from .maintenance import cleanup_once, cleanup_loop, stop_cleanup
 from .rate_limit import throttle
 from .llm import generate_draft, AIUnavailable, provider_status
+from .telegram_bot import router as telegram_router, configure_bot
 
 
 @asynccontextmanager
@@ -31,6 +32,7 @@ async def lifespan(_: FastAPI):
         await asyncio.to_thread(cleanup_once)
     except Exception:
         logging.getLogger(__name__).exception('Initial TTL cleanup failed')
+    await configure_bot()
     task = asyncio.create_task(cleanup_loop())
     try:
         yield
@@ -39,6 +41,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title='YorumPilot AI API', version='0.1.0', lifespan=lifespan)
+app.include_router(telegram_router)
 app.add_middleware(CORSMiddleware, allow_origins=[get_settings().frontend_url],
                    allow_credentials=True, allow_methods=['GET','POST','PATCH','DELETE'],
                    allow_headers=['content-type','x-csrf-token'])
@@ -95,7 +98,7 @@ def status():
             'google_integration': 'MOCK_ONLY' if get_settings().google_mode == 'mock' else 'API_ACCESS_PENDING',
             'live_google_publish_enabled': False, 'ai_provider': provider_status(),
             'database_mode': 'external_postgresql' if get_settings().database_url.startswith('postgresql') else 'ephemeral_sqlite',
-            'customer_data_ready': False}
+            'customer_data_ready': False, 'telegram_bot_configured': bool(__import__('os').getenv('TELEGRAM_BOT_TOKEN',''))}
 
 
 @app.post('/api/auth/register', status_code=201)
@@ -156,7 +159,7 @@ def dashboard(org_id: str, user: User = Depends(current), db: Session = Depends(
     return {'source':'DEMO_DATA' if get_settings().google_mode=='mock' else 'N/A',
             'location_count':db.scalar(select(func.count()).select_from(Location).where(Location.organization_id==org_id)),
             'review_count':len(reviews),
-            'pending_count':sum(r.status=='awaiting_approval' for r in reviews),
+            'pending_count':sum(r.status in ('awaiting_approval','deferred') for r in reviews),
             'negative_count':sum(r.sentiment=='negative' for r in reviews),
             'draft_count':sum(bool(r.draft) for r in reviews),
             'simulated_published_count':sum(r.status=='simulated_published' for r in reviews),
@@ -217,7 +220,7 @@ def regenerate(org_id: str, review_id: str, user: User = Depends(editable), db: 
 @app.post('/api/organizations/{org_id}/reviews/{review_id}/approve')
 def approve(org_id: str, review_id: str, user: User = Depends(editable), db: Session = Depends(get_db)):
     review = review_access(db,user,org_id,review_id,('owner','admin'))
-    if review.status not in ('awaiting_approval','approved') or review.draft.review_revision != review.revision:
+    if review.status not in ('awaiting_approval','approved','deferred') or review.draft.review_revision != review.revision:
         raise HTTPException(409,'Yorum güncel değil veya cevap zaten işlemde')
     review.draft.approved_by = user.id
     review.draft.approved_at = utcnow()
@@ -261,7 +264,7 @@ def publish(org_id: str, review_id: str, data: PublishRequest, user: User = Depe
 @app.post('/api/organizations/{org_id}/reviews/{review_id}/reject')
 def reject(org_id: str, review_id: str, user: User = Depends(editable), db: Session = Depends(get_db)):
     review = review_access(db,user,org_id,review_id,('owner','admin'))
-    if review.status not in ('awaiting_approval','approved'):
+    if review.status not in ('awaiting_approval','approved','deferred'):
         raise HTTPException(409,'Bu yanıt reddedilemez')
     review.status = 'rejected'
     review.draft.approved_by = None
