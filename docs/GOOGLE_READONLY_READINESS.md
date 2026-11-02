@@ -1,55 +1,87 @@
-# YorumPilot: official Google reviews read-only implementation boundary
+# YorumPilot Google Business Profile — OAuth / live read-only cutover
 
-The live repo remains `emirhankaya985-cloud/yorum-pilot.ai`, distinct from
-`emirhankaya985-cloud/site-nobet-ai` (İşletmePilot). Its existing API/Web
-and Neon deployment are **not** changed by this feature branch.
+**Current status: PR-only, not deployed.** İşletmePilot `site-nobet-ai` remains on
+the previously accepted `04cda228`; its SMTP producer stays retired.
+`yorum-pilot.ai` is an independent Render/Neon application. This PR makes
+the *YorumPilot* application the sole owner for any real Google review
+ingestion and draft revision. No cross-service automatic bridge is deployed.
 
-## Implemented, offline-tested code
+## Implemented boundaries
 
-- `backend/app/google_reviews.py` uses the documented
-  `GET https://mybusiness.googleapis.com/v4/accounts/{account}/locations/{location}/reviews`
-  API; **never** POSTs review replies.
-- `backend/app/google_discovery.py` uses Google's Account Management and
-  Business Information **GET-only** APIs to list accounts and locations that
-  the OAuth owner can access, with a required `readMask=name,title`.
-  No account or location is automatically claimed as verified.
-- Only resource names matching a numeric Google account/location, a bounded
-  page count, and valid `business.manage` OAuth bearer credentials are accepted.
-- Rejects malformed responses, pagination loops and Google permission denials.
-  Exceptions never expose tokens, review text or provider error body.
-- Only a non-demo, explicitly organization-bound `Location` with mapped
-  `google_resource_name` may be synchronized. This does **not** invent a
-  location or bypass Google's verified-location restriction.
-- Transactional draft upsert uses existing `ingest()` and its 28-day
-  lifecycle. Repeat is idempotent. Changed text/rating/time invalidates prior
-  approval. Rating-only comments are skipped (no invented reply).
-- No OAuth credentials are stored or logged. No scheduler, API route, Google
-  publication, public response, secret or new paid resource is enabled.
+- OAuth start is a **CSRF-protected owner-only POST**; state binds
+  user + organization + random nonce and is signed, time-limited, hashed
+  in database, consumed atomically before code exchange (single use).
+  PKCE S256 verifier is encrypted at rest; `client_secret` never goes to
+  browser. The Google code callback requires the original owner session
+  and exact registered `https` redirect URI, and redirects with no code/token.
+- The encrypted server-side **refresh** token is the only persistent bearer
+  grant; access tokens live exclusively inside backend requests. The key is
+  a separately provisioned Fernet key in `GOOGLE_TOKEN_ENCRYPTION_KEY`,
+  **never** put in Git, public CI logs or frontend. Connection revocation
+  immediately removes the local encrypted grant; remote Google revocation
+  is best-effort and owner should also revoke third-party access at Google.
+  Changing the Fernet key without re-encrypting grants invalidates them.
+- Non-owner access is hidden by organization membership checks. Only
+  Google-returned authorized accounts/locations can be selected, and
+  demo locations **cannot** be converted to real locations.
+- Manual `/sync/{location_id}` rechecks Google ownership on every read.
+  Stable `(org,location,reviewId)` de-duplication creates one YorumPilot
+  draft. Google review revision change revokes old human approval.
+  No `updateReply`, no Google write scopes beyond the provider's mandated
+  `business.manage` scope, no scheduled ingestion and no auto-publish.
+- Approval gate is **fail-closed** unless
+  `GOOGLE_BUSINESS_API_APPROVED=true` AND all client, redirect, encryption
+  secrets are configured. No secret is visible in status API.
+- Tokens expire/revoke: failed refresh revokes local grant on `invalid_grant`.
+  API rate/quota/network errors never produce a published result. Failures
+  in pagination/permission are rejected, with no partial DB commit.
 
-## Remaining real live prerequisites (not simulated)
+## Deployment prerequisites — NOT verified
 
-1. Google-approved Business Profile API project and verified business
-   location, with an owner who explicitly authorizes access. API quota may be
-   zero until Google grants approval.
-2. Secure owner-authenticated OAuth authorization + callback: exact registered
-   redirect URI, session-bound state/nonce, PKCE, short-lived access token,
-   encrypted refresh token at rest (if background synchronization is approved),
-   token revocation/deletion and tenant isolation. Existing `google_oauth.py`
-   provides helpers but **not** a deployed login/callback flow.
-3. Explicit account/location selection and verification via Google, not a
-   guessed resource ID. A real verified location must replace demo entries
-   without deleting the existing demo records.
-4. Activate a separately authorized read-only sync schedule only after quotas,
-   Google content retention and privacy compliance are proven. Manual draft
-   approval remains required; `updateReply` is NOT included or enabled.
+1. A verified Google Business Profile owner and actual accessible account
+   and location; Google must approve the API project and its quota.
+2. Dedicated OAuth Web application (do **not** reuse CareerHunter Gmail or
+   YouTube OAuth clients), Google Cloud consent screen and
+   `business.manage` scope approved.
+3. Runtime secrets on the **existing** YorumPilot backend only:
+   `GOOGLE_BUSINESS_API_APPROVED=true`,
+   `GOOGLE_OAUTH_CLIENT_ID`,
+   `GOOGLE_OAUTH_CLIENT_SECRET`,
+   `GOOGLE_OAUTH_REDIRECT_URI=https://yorumpilot-web.onrender.com/api/organizations/<actual-owner-org-id>/google/callback`,
+   `GOOGLE_TOKEN_ENCRYPTION_KEY` (Fernet). No example real values are
+   included in this PR. A fixed redirect URI **per organization** is
+   currently required: multi-tenant rollout must choose an OAuth redirect
+   design that supports all registered organization URLs before production.
+4. Apply additive Alembic revision `0003_google_oauth` **before** starting
+   upgraded API. Existing demo organizations/reviews/drafts must remain.
+5. Real consent and a live read-only pilot are mandatory before any claim
+   of live Google synchronization. This PR's 48+ tests use synthetic
+   provider fixtures and cannot demonstrate Google entitlement.
 
-If any precondition is absent, keep `GOOGLE_MODE=mock` or `pending`.
-Never report `simulated_published` as a real review reply.
-Do not reuse CareerHunter Gmail OAuth or YouTube client credentials.
+## Single source of truth / smallest safe bridge
 
-Official Google references:
-- https://developers.google.com/my-business/content/prereqs
-- https://developers.google.com/my-business/content/implement-oauth
-- https://developers.google.com/my-business/reference/rest/v4/accounts.locations.reviews/list
-- https://developers.google.com/my-business/reference/accountmanagement/rest/v1/accounts/list
-- https://developers.google.com/my-business/reference/businessinformation/rest/v1/accounts.locations/list
+- **Google review ownership:** YorumPilot Neon
+  `reviews_cache` and `ai_drafts`. Unique
+  `(organization_id, location_id, external_id)` ensures 1 draft per review.
+  Google resource `accounts/N/locations/M` is bound only after provider
+  verification and never inferred from business names.
+- **BusinessPilot:** separate organization IDs, separate database,
+  `review_drafts` used only for its own manually imported reviews.
+  A Google review MUST NOT also be sent to BusinessPilot
+  `/business/reviews/import`: that would create a second independent draft.
+- Future integration must require an explicit tenant mapping maintained by
+  owners in both services, and an immutable external composite key, plus a
+  single writer. Until mappings and authorization exist, do not copy review
+  content or count BusinessPilot drafts as Google production replies.
+- Old Müşteri Avcısı email CRM history is unrelated and must not be touched.
+
+## Safe rollback (requires explicit user production approval)
+
+Leave `yorum-pilot.ai` production at the prior successful commit until
+approved. If the upgraded release fails after permission to deploy:
+roll the YorumPilot API/Web code back to its prior commit and keep
+`google_oauth_attempts` / `google_connections` intact.
+**Never downgrade nonempty OAuth tables**; the migration deliberately
+refuses a data-losing downgrade. Disable approval gate; preserve encrypted
+grants until owner authorizes revocation, then erase. Do not change
+`site-nobet-ai`, Gmail watcher, Telegram polling or SMTP.
