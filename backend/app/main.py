@@ -252,6 +252,8 @@ def publish(org_id: str, review_id: str, data: PublishRequest, user: User = Depe
     loc = db.scalar(select(Location).where(Location.id==review.location_id, Location.organization_id==org_id))
     if not loc:
         raise HTTPException(409,'Şube eşleştirmesi bulunamadı')
+    if not loc.is_demo:
+        raise HTTPException(409, 'Gerçek Google yorumları yalnızca taslak onayı için kullanılabilir; yayınlama kapalı')
     try:
         adapter = MockGoogleAdapter() if get_settings().google_mode=='mock' else PendingGoogleAdapter()
         result = adapter.publish_reply(review.external_id, review.draft.text)
