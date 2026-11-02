@@ -77,9 +77,9 @@ def test_daily_digest_uses_private_confirmed_chat_and_one_receipt(client, monkey
 
 
 def test_ambiguous_telegram_send_never_replays(client, monkeypatch):
-    activate(monkeypatch)
+    sent = activate(monkeypatch)
     org = signup(client)
-    link(client, org, [], update_id=81002)
+    link(client, org, sent, update_id=81002)
     calls = []
     async def flaky(method, payload):
         calls.append(1)
@@ -102,8 +102,8 @@ def test_unlinked_or_demoted_owner_receives_no_report(client, monkeypatch):
         return {"message_id": 99}
     result = run_once("digest", now=TIME, factory=client.db_factory, sender=mock_sender)
     assert result["error_code"] == "TELEGRAM_OWNER_NOT_LINKED"
-    activate(monkeypatch)
-    link(client, org, [], update_id=81003)
+    sent = activate(monkeypatch)
+    link(client, org, sent, update_id=81003)
     with client.db_factory() as db:
         member = db.scalar(select(Membership).where(Membership.organization_id == org))
         member.role = "viewer"
