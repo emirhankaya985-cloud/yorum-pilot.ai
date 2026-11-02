@@ -179,3 +179,16 @@ class AutonomousDigest(Base):
     receipt_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AutonomousOrgRun(Base):
+    """Per-organization totals. Never share other tenants' job counts."""
+    __tablename__ = "autonomous_org_runs"
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    status: Mapped[str] = mapped_column(String(20))
+    read_count: Mapped[int] = mapped_column(Integer, default=0)
+    new_count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_code: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

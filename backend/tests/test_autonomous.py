@@ -1,7 +1,7 @@
 """Headless cron logic: DB-backed locks, owner-only reports and no blind resend."""
 from datetime import datetime, timezone, timedelta
 from sqlalchemy import select
-from app.autonomous import run_once, slot_key, next_nominal
+from app.autonomous import run_once, slot_key, next_nominal, daily_counts, record_org
 from app.models import AutonomousRun, AutonomousDigest, Location, Membership
 from .conftest import signup
 from .test_telegram_bot import activate, link
@@ -112,3 +112,20 @@ def test_unlinked_or_demoted_owner_receives_no_report(client, monkeypatch):
                       factory=client.db_factory, sender=mock_sender)
     assert future["status"] == "blocked"
     assert not delivery
+
+
+def test_daily_metrics_are_strictly_org_scoped(client):
+    first = signup(client)
+    client.cookies.clear()
+    second = signup(client, "other-autonomy@example.com", "Other org")
+    with client.db_factory() as db:
+        record_org(db, "sync:2026110220", first, "success",
+                   {"read": 3, "new": 2, "updated": 1})
+        record_org(db, "sync:2026110220", second, "success",
+                   {"read": 10, "new": 9, "updated": 1})
+    with client.db_factory() as db:
+        one = daily_counts(db, TIME, first)
+        two = daily_counts(db, TIME, second)
+    assert one["new"] == 2 and one["updated"] == 1
+    assert two["new"] == 9 and two["updated"] == 1
+    assert one["new"] != two["new"]

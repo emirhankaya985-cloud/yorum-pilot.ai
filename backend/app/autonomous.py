@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 
 from .db import SessionLocal
 from .models import (
-    AutonomousRun, AutonomousSyncBlock, AutonomousDigest,
+    AutonomousRun, AutonomousSyncBlock, AutonomousDigest, AutonomousOrgRun,
     GoogleConnection, Location, Organization, Review, TelegramBinding,
     Membership, utcnow,
 )
@@ -87,7 +87,19 @@ def finish(factory, key, status, counts=None, error_code=None):
         db.commit()
 
 
-def google_sync(factory):
+def record_org(db, key, org_id, status, counts=None, error_code=None):
+    """One row per authorized organization and slot; no cross-tenant data."""
+    counts = counts or {}
+    db.add(AutonomousOrgRun(
+        id=f"{key}:{org_id}", organization_id=org_id,
+        status=status, read_count=counts.get("read", 0),
+        new_count=counts.get("new", 0),
+        updated_count=counts.get("updated", 0),
+        error_code=error_code))
+    db.commit()
+
+
+def google_sync(factory, key):
     totals = {"read": 0, "new": 0, "updated": 0}
     if os.getenv("GOOGLE_BUSINESS_API_APPROVED") != "true":
         return totals, "blocked", "GBP_API_APPROVAL_MISSING"
@@ -106,6 +118,7 @@ def google_sync(factory):
             block = db.get(AutonomousSyncBlock, org_id)
             if block and block.grant_version == version:
                 failures.append(block.reason_code)
+                record_org(db, key, org_id, "blocked", error_code=block.reason_code)
                 continue
             locations = db.scalars(select(Location).where(
                 Location.organization_id == org_id,
@@ -113,8 +126,10 @@ def google_sync(factory):
                 Location.google_resource_name.is_not(None)).limit(100)).all()
             if not locations:
                 failures.append("OWNER_LOCATION_NOT_SELECTED")
+                record_org(db, key, org_id, "blocked", error_code="OWNER_LOCATION_NOT_SELECTED")
                 continue
             try:
+                org_counts = {"read": 0, "new": 0, "updated": 0}
                 token = _access(db, conn, org_id)
                 accessible = {
                     l.review_parent
@@ -130,10 +145,12 @@ def google_sync(factory):
                     after = db.scalar(select(func.count(Review.id)).where(
                         Review.organization_id == org_id, Review.location_id == loc.id)) or 0
                     added = after - before
-                    totals["read"] += outcome["read"]
-                    totals["new"] += added
-                    totals["updated"] += outcome["drafts_created_or_refreshed"] - added
-                db.commit()
+                    org_counts["read"] += outcome["read"]
+                    org_counts["new"] += added
+                    org_counts["updated"] += outcome["drafts_created_or_refreshed"] - added
+                record_org(db, key, org_id, "success", counts=org_counts)
+                for metric in totals:
+                    totals[metric] += org_counts[metric]
                 if block:
                     db.delete(block)
                     db.commit()
@@ -157,25 +174,29 @@ def google_sync(factory):
                     code = "GOOGLE_QUOTA_LIMIT"
                 else:
                     code = "GOOGLE_PROVIDER_UNAVAILABLE"
+                record_org(db, key, org_id, "blocked", error_code=code)
                 failures.append(code)
     if failures:
         return totals, ("partial" if totals["read"] else "blocked"), failures[0]
     return totals, "success", None
 
 
-def daily_counts(db, now):
+def daily_counts(db, now, org_id):
+    """Only selected tenant's accepted Google syncs and sanitized errors."""
     local = now.astimezone(TRT)
     since = local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
-    rows = db.scalars(select(AutonomousRun).where(
-        AutonomousRun.kind == "sync",
-        AutonomousRun.started_at >= since,
-        AutonomousRun.started_at <= now)).all()
-    last = db.scalar(select(AutonomousRun.finished_at).where(
-        AutonomousRun.kind == "sync", AutonomousRun.status == "success"
-    ).order_by(AutonomousRun.finished_at.desc()).limit(1))
-    error = db.scalar(select(AutonomousRun.error_code).where(
-        AutonomousRun.error_code.is_not(None)
-    ).order_by(AutonomousRun.started_at.desc()).limit(1))
+    rows = db.scalars(select(AutonomousOrgRun).where(
+        AutonomousOrgRun.organization_id == org_id,
+        AutonomousOrgRun.finished_at >= since,
+        AutonomousOrgRun.finished_at <= now)).all()
+    last = db.scalar(select(AutonomousOrgRun.finished_at).where(
+        AutonomousOrgRun.organization_id == org_id,
+        AutonomousOrgRun.status == "success"
+    ).order_by(AutonomousOrgRun.finished_at.desc()).limit(1))
+    error = db.scalar(select(AutonomousOrgRun.error_code).where(
+        AutonomousOrgRun.organization_id == org_id,
+        AutonomousOrgRun.error_code.is_not(None)
+    ).order_by(AutonomousOrgRun.finished_at.desc()).limit(1))
     return {
         "ok": sum(r.status == "success" for r in rows),
         "failed": sum(r.status in ("failed", "partial", "blocked") for r in rows),
@@ -184,7 +205,6 @@ def daily_counts(db, now):
         "last_sync": _aware(last).astimezone(TRT).isoformat() if last else "henüz yok",
         "last_error": error or "yok",
     }
-
 
 def report_message(org, metrics):
     return (
@@ -233,7 +253,7 @@ async def daily_digest(factory, now, sender):
             db.commit()
             if not claimed:
                 continue
-            text = report_message(org, daily_counts(db, now))
+            text = report_message(org, daily_counts(db, now, org_id))
             chat_id = bind.chat_id
         try:
             response = await sender("sendMessage", {
@@ -272,7 +292,7 @@ def run_once(kind, *, factory=SessionLocal, now=None, syncer=None, sender=_api):
     counts = {}
     try:
         if kind == "sync":
-            counts, status, code = (syncer(factory) if syncer else google_sync(factory))
+            counts, status, code = (syncer(factory) if syncer else google_sync(factory, key))
         else:
             counts, status, code = asyncio.run(daily_digest(factory, now, sender))
         finish(factory, key, status, counts, code)
