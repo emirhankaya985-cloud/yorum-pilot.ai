@@ -69,6 +69,8 @@ def _token_call(payload):
         except httpx.HTTPError:
             raise HTTPException(502, "Google token service unavailable") from None
     if response.status_code != 200:
+        if response.status_code == 429:
+            raise HTTPException(429, "Google API quota exceeded")
         if response.status_code in (400, 401):
             raise HTTPException(401, "Google authorization expired or revoked")
         raise HTTPException(502, f"Google token exchange failed (HTTP {response.status_code})")
@@ -84,7 +86,7 @@ def _token_call(payload):
     return data
 
 
-def _access(conn, org_id):
+def _access(db, conn, org_id):
     _configuration(org_id)
     if conn is None or conn.revoked_at is not None:
         raise HTTPException(409, "Google Business Profile owner connection is not active")
@@ -100,6 +102,7 @@ def _access(conn, org_id):
         if exc.status_code == 401:
             conn.revoked_at = utcnow()
             conn.refresh_ciphertext = ""  # revoke locally, do not leave usable credentials
+            db.commit()
         raise
     return data["access_token"]
 
@@ -159,7 +162,7 @@ def google_callback(org_id: str, request: Request, state: str = "",
         GoogleOAuthAttempt.nonce_hash == digest,
         GoogleOAuthAttempt.used_at.is_(None),
         GoogleOAuthAttempt.expires_at > utcnow()).values(
-            used_at=utcnow()).returning(GoogleOAuthAttempt.nonce_hash)).scalar_one_or_none()
+            used_at=utcnow()).execution_options(synchronize_session=False).returning(GoogleOAuthAttempt.nonce_hash)).scalar_one_or_none()
     db.commit()
     if claim is None:
         raise HTTPException(409, "Google OAuth state already used or expired")
@@ -194,7 +197,7 @@ def google_callback(org_id: str, request: Request, state: str = "",
 def google_accounts(org_id: str, request: Request, db: Session = Depends(get_db)):
     _owner(org_id, request, db)
     conn = _connected(db, org_id)
-    token = _access(conn, org_id)
+    token = _access(db, conn, org_id)
     try:
         accounts = discover_accounts(token)
     except GoogleReviewAccessError:
@@ -205,7 +208,7 @@ def google_accounts(org_id: str, request: Request, db: Session = Depends(get_db)
 @router.get("/accounts/{account_id}/locations")
 def google_locations(org_id: str, account_id: str, request: Request, db: Session = Depends(get_db)):
     _owner(org_id, request, db)
-    token = _access(_connected(db, org_id), org_id)
+    token = _access(db, _connected(db, org_id), org_id)
     try:
         names = {a.name for a in discover_accounts(token)}
         acct = "accounts/" + account_id
@@ -229,7 +232,7 @@ class GoogleLocationSelection(BaseModel):
 def google_select_location(org_id: str, data: GoogleLocationSelection, request: Request,
                            db: Session = Depends(get_db)):
     _owner(org_id, request, db, write=True)
-    token = _access(_connected(db, org_id), org_id)
+    token = _access(db, _connected(db, org_id), org_id)
     try:
         accounts = {a.name for a in discover_accounts(token)}
         if data.account_name not in accounts:
@@ -262,7 +265,7 @@ def google_sync(org_id: str, location_id: str, request: Request, db: Session = D
         Location.is_demo.is_(False)))
     if location is None:
         raise HTTPException(404, "Authorized real Google location not found")
-    token = _access(_connected(db, org_id), org_id)
+    token = _access(db, _connected(db, org_id), org_id)
     # Recheck Google owner access on *every* import, never trust stored mapping alone.
     try:
         accounts = discover_accounts(token)
