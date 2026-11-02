@@ -183,3 +183,25 @@ def test_only_organization_owner_can_connect_google(approved, client):
                            headers=csrf(client))
     assert response.status_code == 404
     assert client.get(f"/api/organizations/{org}/google/status").status_code == 404
+
+
+def test_real_review_cannot_be_simulated_as_google_publication(client):
+    from app.ingestion import ingest
+    from app.models import Review
+    org=signup(client)
+    with client.db_factory() as db:
+        loc=db.scalar(select(Location).where(Location.organization_id==org))
+        loc.is_demo=False
+        loc.google_resource_name="accounts/100/locations/200"
+        db.flush()
+        review, _=ingest(db,org,loc.id,"review-safe-001","v1","Harika",5)
+        review_id=review.id
+        db.commit()
+    base=f"/api/organizations/{org}/reviews/{review_id}"
+    assert client.post(base+"/approve",headers=csrf(client)).status_code==200
+    sent=client.post(base+"/publish",headers=csrf(client),
+                     json={"confirm":True,"idempotency_key":"must-not-publish-real-001"})
+    assert sent.status_code==409
+    with client.db_factory() as db:
+        saved=db.get(Review,review_id)
+        assert saved.status=="approved"
