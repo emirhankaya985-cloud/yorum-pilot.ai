@@ -144,3 +144,38 @@ class GoogleConnection(Base):
     refresh_ciphertext: Mapped[str] = mapped_column(Text)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AutonomousRun(Base):
+    """Persistent cron slot, lease, metrics and sanitized errors."""
+    __tablename__ = "autonomous_runs"
+    key: Mapped[str] = mapped_column(String(96), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(12), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="ready")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    read_count: Mapped[int] = mapped_column(Integer, default=0)
+    new_count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_code: Mapped[str | None] = mapped_column(String(48), nullable=True)
+
+
+class AutonomousSyncBlock(Base):
+    """Do not retry an unchanged Google grant after permission rejection."""
+    __tablename__ = "autonomous_sync_blocks"
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), primary_key=True)
+    grant_version: Mapped[str] = mapped_column(String(64))
+    reason_code: Mapped[str] = mapped_column(String(48))
+
+
+class AutonomousDigest(Base):
+    """Owner-only daily report; unknown Telegram outcome must not replay."""
+    __tablename__ = "autonomous_digests"
+    event_key: Mapped[str] = mapped_column(String(96), primary_key=True)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="ready")
+    receipt_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
