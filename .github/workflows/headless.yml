@@ -1,0 +1,60 @@
+name: YorumPilot Free Headless Jobs
+on:
+  schedule:
+    # UTC: 20:59 is 23:59 Europe/Istanbul year-round.
+    - cron: '17 * * * *'
+    - cron: '59 20 * * *'
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "Run read-only sync or single private digest"
+        type: choice
+        required: true
+        options: [sync, digest]
+permissions:
+  contents: read
+concurrency:
+  group: yorumpilot-headless-jobs
+  cancel-in-progress: false
+jobs:
+  execute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      DATABASE_URL: ${{ secrets.YORUMPILOT_DATABASE_URL }}
+      SECRET_KEY: ${{ secrets.YP_SESSION_SECRET }}
+      GOOGLE_BUSINESS_API_APPROVED: ${{ vars.GOOGLE_BUSINESS_API_APPROVED }}
+      GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.YP_GOOGLE_OAUTH_CLIENT_ID }}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.YP_GOOGLE_OAUTH_CLIENT_SECRET }}
+      GOOGLE_OAUTH_REDIRECT_URI: ${{ vars.YP_GOOGLE_OAUTH_REDIRECT_URI }}
+      GOOGLE_TOKEN_ENCRYPTION_KEY: ${{ secrets.YP_GOOGLE_TOKEN_ENCRYPTION_KEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.YP_TELEGRAM_BOT_TOKEN }}
+      FRONTEND_URL: https://yorumpilot-web.onrender.com
+      GOOGLE_MODE: pending
+      APP_ENV: production
+    steps:
+      - name: Safe prerequisite check (never print secret values)
+        id: preflight
+        shell: bash
+        run: |
+          if [ -n "$DATABASE_URL" ] && [ -n "$SECRET_KEY" ]; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            echo '::notice::Cron skipped: secure Neon/session configuration is missing; no live job ran.'
+          fi
+      - uses: actions/checkout@v4
+        if: steps.preflight.outputs.ready == 'true'
+      - uses: actions/setup-python@v5
+        if: steps.preflight.outputs.ready == 'true'
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        if: steps.preflight.outputs.ready == 'true'
+        run: pip install -r backend/requirements.txt
+      - name: Read-only scheduled task with durable job state
+        if: steps.preflight.outputs.ready == 'true'
+        working-directory: backend
+        env:
+          RUN_KIND: ${{ github.event_name == 'workflow_dispatch' && inputs.job || (github.event.schedule == '59 20 * * *' && 'digest' || 'sync') }}
+        run: python -m app.autonomous --job "$RUN_KIND"

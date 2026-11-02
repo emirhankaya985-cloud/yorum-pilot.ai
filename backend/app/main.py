@@ -22,6 +22,7 @@ from .maintenance import cleanup_once, cleanup_loop, stop_cleanup
 from .rate_limit import throttle
 from .llm import generate_draft, AIUnavailable, provider_status
 from .telegram_bot import router as telegram_router, configure_bot
+from .google_routes import router as google_router
 
 
 @asynccontextmanager
@@ -42,6 +43,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title='YorumPilot AI API', version='0.1.0', lifespan=lifespan)
 app.include_router(telegram_router)
+app.include_router(google_router)
 app.add_middleware(CORSMiddleware, allow_origins=[get_settings().frontend_url],
                    allow_credentials=True, allow_methods=['GET','POST','PATCH','DELETE'],
                    allow_headers=['content-type','x-csrf-token'])
@@ -77,14 +79,14 @@ def review_access(db: Session, user: User, org_id: str, review_id: str, roles=('
     return review
 
 
-def review_json(review: Review, loc_name: str):
+def review_json(review: Review, loc_name: str, *, is_demo: bool = True):
     return dict(id=review.id, location_id=review.location_id, location=loc_name,
                 stars=review.stars, content=review.content, sentiment=review.sentiment,
                 priority=review.priority, category=review.category, language=review.language,
                 status=review.status, created_at=review.created_at.isoformat(),
                 draft=review.draft.text if review.draft else None,
                 approved=bool(review.draft and review.draft.approved_by),
-                source='DEMO_DATA')
+                source='DEMO_DATA' if is_demo else 'GOOGLE_BUSINESS_PROFILE')
 
 
 @app.get('/healthz')
@@ -156,14 +158,15 @@ def me(user: User = Depends(current), db: Session = Depends(get_db)):
 def dashboard(org_id: str, user: User = Depends(current), db: Session = Depends(get_db)):
     org_access(db,user,org_id)
     reviews = db.scalars(select(Review).where(Review.organization_id==org_id, Review.expires_at > utcnow())).all()
-    return {'source':'DEMO_DATA' if get_settings().google_mode=='mock' else 'N/A',
+    real_reviews = sum(1 for review in reviews if db.get(Location, review.location_id) and not db.get(Location, review.location_id).is_demo)
+    return {'source': 'MIXED_DATA' if real_reviews else 'DEMO_DATA',
             'location_count':db.scalar(select(func.count()).select_from(Location).where(Location.organization_id==org_id)),
             'review_count':len(reviews),
             'pending_count':sum(r.status in ('awaiting_approval','deferred') for r in reviews),
             'negative_count':sum(r.sentiment=='negative' for r in reviews),
             'draft_count':sum(bool(r.draft) for r in reviews),
             'simulated_published_count':sum(r.status=='simulated_published' for r in reviews),
-            'google_connected':False,
+            'google_connected':bool(db.get(models.GoogleConnection, org_id) and not db.get(models.GoogleConnection, org_id).revoked_at),
             'average_stars':round(sum(r.stars for r in reviews)/len(reviews),1) if reviews else None}
 
 
@@ -182,8 +185,9 @@ def reviews(org_id: str, sentiment: str | None = None, user: User = Depends(curr
             raise HTTPException(400,'Geçersiz filtre')
         query = query.where(Review.sentiment==sentiment)
     rows = db.scalars(query.order_by(Review.created_at.desc()).limit(100)).all()
-    names = {x.id:x.name for x in db.scalars(select(Location).where(Location.organization_id==org_id))}
-    return [review_json(r,names.get(r.location_id, '')) for r in rows]
+    names = {x.id:x for x in db.scalars(select(Location).where(Location.organization_id==org_id))}
+    return [review_json(r, names[r.location_id].name, is_demo=names[r.location_id].is_demo)
+            for r in rows if r.location_id in names]
 
 
 @app.patch('/api/organizations/{org_id}/reviews/{review_id}/draft')
@@ -248,6 +252,8 @@ def publish(org_id: str, review_id: str, data: PublishRequest, user: User = Depe
     loc = db.scalar(select(Location).where(Location.id==review.location_id, Location.organization_id==org_id))
     if not loc:
         raise HTTPException(409,'Şube eşleştirmesi bulunamadı')
+    if not loc.is_demo:
+        raise HTTPException(409, 'Gerçek Google yorumları yalnızca taslak onayı için kullanılabilir; yayınlama kapalı')
     try:
         adapter = MockGoogleAdapter() if get_settings().google_mode=='mock' else PendingGoogleAdapter()
         result = adapter.publish_reply(review.external_id, review.draft.text)

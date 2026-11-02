@@ -123,3 +123,72 @@ class TelegramUpdate(Base):
     __tablename__ = 'telegram_updates'
     update_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class GoogleOAuthAttempt(Base):
+    """One-time owner-scoped OAuth challenge, PKCE verifier encrypted at rest."""
+    __tablename__ = "google_oauth_attempts"
+    nonce_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    verifier_ciphertext: Mapped[str] = mapped_column(Text)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class GoogleConnection(Base):
+    """Server-only encrypted refresh token; never returned to browser."""
+    __tablename__ = "google_connections"
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    refresh_ciphertext: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AutonomousRun(Base):
+    """Persistent cron slot, lease, metrics and sanitized errors."""
+    __tablename__ = "autonomous_runs"
+    key: Mapped[str] = mapped_column(String(96), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(12), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="ready")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    read_count: Mapped[int] = mapped_column(Integer, default=0)
+    new_count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_code: Mapped[str | None] = mapped_column(String(48), nullable=True)
+
+
+class AutonomousSyncBlock(Base):
+    """Do not retry an unchanged Google grant after permission rejection."""
+    __tablename__ = "autonomous_sync_blocks"
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), primary_key=True)
+    grant_version: Mapped[str] = mapped_column(String(64))
+    reason_code: Mapped[str] = mapped_column(String(48))
+
+
+class AutonomousDigest(Base):
+    """Owner-only daily report; unknown Telegram outcome must not replay."""
+    __tablename__ = "autonomous_digests"
+    event_key: Mapped[str] = mapped_column(String(96), primary_key=True)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="ready")
+    receipt_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AutonomousOrgRun(Base):
+    """Per-organization totals. Never share other tenants' job counts."""
+    __tablename__ = "autonomous_org_runs"
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    status: Mapped[str] = mapped_column(String(20))
+    read_count: Mapped[int] = mapped_column(Integer, default=0)
+    new_count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_code: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
