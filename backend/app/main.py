@@ -22,6 +22,7 @@ from .maintenance import cleanup_once, cleanup_loop, stop_cleanup
 from .rate_limit import throttle
 from .llm import generate_draft, AIUnavailable, provider_status
 from .telegram_bot import router as telegram_router, configure_bot
+from .google_routes import router as google_router
 
 
 @asynccontextmanager
@@ -42,6 +43,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title='YorumPilot AI API', version='0.1.0', lifespan=lifespan)
 app.include_router(telegram_router)
+app.include_router(google_router)
 app.add_middleware(CORSMiddleware, allow_origins=[get_settings().frontend_url],
                    allow_credentials=True, allow_methods=['GET','POST','PATCH','DELETE'],
                    allow_headers=['content-type','x-csrf-token'])

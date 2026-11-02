@@ -123,3 +123,24 @@ class TelegramUpdate(Base):
     __tablename__ = 'telegram_updates'
     update_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class GoogleOAuthAttempt(Base):
+    """One-time owner-scoped OAuth challenge, PKCE verifier encrypted at rest."""
+    __tablename__ = "google_oauth_attempts"
+    nonce_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    verifier_ciphertext: Mapped[str] = mapped_column(Text)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class GoogleConnection(Base):
+    """Server-only encrypted refresh token; never returned to browser."""
+    __tablename__ = "google_connections"
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    refresh_ciphertext: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
