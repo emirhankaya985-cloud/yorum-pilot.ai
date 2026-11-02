@@ -2,7 +2,7 @@
 from datetime import datetime, timezone, timedelta
 from sqlalchemy import select
 from app.autonomous import run_once, slot_key, next_nominal, daily_counts, record_org
-from app.models import AutonomousRun, AutonomousDigest, Location, Membership
+from app.models import AutonomousRun, AutonomousDigest, AutonomousOrgRun, Location, Membership
 from .conftest import signup
 from .test_telegram_bot import activate, link
 
@@ -123,6 +123,10 @@ def test_daily_metrics_are_strictly_org_scoped(client):
                    {"read": 3, "new": 2, "updated": 1})
         record_org(db, "sync:2026110220", second, "success",
                    {"read": 10, "new": 9, "updated": 1})
+    with client.db_factory() as db:
+        for row in db.scalars(select(AutonomousOrgRun)).all():
+            row.finished_at = TIME - timedelta(minutes=1)
+        db.commit()
     with client.db_factory() as db:
         one = daily_counts(db, TIME, first)
         two = daily_counts(db, TIME, second)
