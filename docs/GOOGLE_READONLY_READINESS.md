@@ -9,6 +9,10 @@ and Neon deployment are **not** changed by this feature branch.
 - `backend/app/google_reviews.py` uses the documented
   `GET https://mybusiness.googleapis.com/v4/accounts/{account}/locations/{location}/reviews`
   API; **never** POSTs review replies.
+- `backend/app/google_discovery.py` uses Google's Account Management and
+  Business Information **GET-only** APIs to list accounts and locations that
+  the OAuth owner can access, with a required `readMask=name,title`.
+  No account or location is automatically claimed as verified.
 - Only resource names matching a numeric Google account/location, a bounded
   page count, and valid `business.manage` OAuth bearer credentials are accepted.
 - Rejects malformed responses, pagination loops and Google permission denials.
@@ -47,3 +51,5 @@ Official Google references:
 - https://developers.google.com/my-business/content/prereqs
 - https://developers.google.com/my-business/content/implement-oauth
 - https://developers.google.com/my-business/reference/rest/v4/accounts.locations.reviews/list
+- https://developers.google.com/my-business/reference/accountmanagement/rest/v1/accounts/list
+- https://developers.google.com/my-business/reference/businessinformation/rest/v1/accounts.locations/list
