@@ -1,7 +1,7 @@
 """Headless cron logic: DB-backed locks, owner-only reports and no blind resend."""
 from datetime import datetime, timezone, timedelta
 from sqlalchemy import select
-from app.autonomous import run_once, slot_key, next_nominal, daily_counts, record_org
+from app.autonomous import run_once, slot_key, next_nominal, daily_counts, record_org, digest_business_day
 from app.models import AutonomousRun, AutonomousDigest, AutonomousOrgRun, Location, Membership
 from .conftest import signup
 from .test_telegram_bot import activate, link
@@ -133,3 +133,44 @@ def test_daily_metrics_are_strictly_org_scoped(client):
     assert one["new"] == 2 and one["updated"] == 1
     assert two["new"] == 9 and two["updated"] == 1
     assert one["new"] != two["new"]
+
+
+
+def test_delayed_daily_schedule_uses_yesterdays_slot_and_real_lease(client):
+    """GitHub may execute a 23:59 scheduled run after local midnight."""
+    late = datetime(2026, 11, 3, 21, 21, tzinfo=timezone.utc)
+    anchor = digest_business_day(late)
+    assert slot_key("digest", anchor) == "digest:20261103"
+    assert slot_key("digest", late) == "digest:20261104"
+    assert digest_business_day(datetime(2026, 11, 3, 21, 59, tzinfo=timezone.utc)) == anchor
+
+    org = signup(client)
+    calls = []
+    async def sender(method, payload):
+        calls.append(1)
+        return {"message_id": 991}
+    # With no paired owner, only a failed/blocked durable digest slot is made.
+    result = run_once("digest", now=late, factory=client.db_factory, sender=sender)
+    assert result["status"] == "blocked"
+    with client.db_factory() as db:
+        row = db.get(AutonomousRun, "digest:20261103")
+        assert row.status == "blocked"
+        assert row.lease_until is None
+        assert row.started_at == late or row.started_at.replace(tzinfo=timezone.utc) == late
+    assert not calls
+
+
+def test_same_slot_organization_write_is_idempotent(client):
+    org = signup(client)
+    with client.db_factory() as db:
+        record_org(db, "sync:repeat", org, "failed",
+                   {"read": 0, "new": 0, "updated": 0}, "GOOGLE_PROVIDER_UNAVAILABLE")
+        record_org(db, "sync:repeat", org, "success",
+                   {"read": 2, "new": 1, "updated": 1})
+    with client.db_factory() as db:
+        rows = db.scalars(select(AutonomousOrgRun).where(
+            AutonomousOrgRun.organization_id == org)).all()
+        assert len(rows) == 1
+        assert rows[0].status == "success"
+        assert rows[0].new_count == 1
+        assert rows[0].error_code is None

@@ -39,6 +39,19 @@ def slot_key(kind, now):
     return f"{kind}:{slot}"
 
 
+def digest_business_day(now):
+    """Gracefully handle a GitHub 23:59 TRT schedule delayed past midnight.
+
+    Only 00:00–00:59 TRT is a bounded catch-up for the previous reporting day.
+    The actual lease always uses the real execution time, not the backdated slot.
+    """
+    local = now.astimezone(TRT)
+    if local.hour == 0:
+        return (local - timedelta(days=1)).replace(
+            hour=23, minute=59, second=0, microsecond=0).astimezone(timezone.utc)
+    return now
+
+
 def next_nominal(now):
     local = now.astimezone(TRT)
     hourly = local.replace(minute=17, second=0, microsecond=0)
@@ -50,8 +63,8 @@ def next_nominal(now):
     return {"sync": hourly.isoformat(), "digest": daily.isoformat()}
 
 
-def claim(factory, kind, now):
-    key = slot_key(kind, now)
+def claim(factory, kind, now, slot_time=None):
+    key = slot_key(kind, slot_time or now)
     with factory() as db:
         if db.get(AutonomousRun, key) is None:
             db.add(AutonomousRun(key=key, kind=kind, status="ready"))
@@ -90,12 +103,17 @@ def finish(factory, key, status, counts=None, error_code=None):
 def record_org(db, key, org_id, status, counts=None, error_code=None):
     """One row per authorized organization and slot; no cross-tenant data."""
     counts = counts or {}
-    db.add(AutonomousOrgRun(
-        id=f"{key}:{org_id}", organization_id=org_id,
-        status=status, read_count=counts.get("read", 0),
-        new_count=counts.get("new", 0),
-        updated_count=counts.get("updated", 0),
-        error_code=error_code))
+    row_id = f"{key}:{org_id}"
+    row = db.get(AutonomousOrgRun, row_id)
+    if row is None:
+        row = AutonomousOrgRun(id=row_id, organization_id=org_id, status=status)
+        db.add(row)
+    row.status = status
+    row.read_count = counts.get("read", 0)
+    row.new_count = counts.get("new", 0)
+    row.updated_count = counts.get("updated", 0)
+    row.error_code = error_code
+    row.finished_at = utcnow()
     db.commit()
 
 
@@ -286,7 +304,8 @@ def run_once(kind, *, factory=SessionLocal, now=None, syncer=None, sender=_api):
     if kind not in ("sync", "digest"):
         raise ValueError("Unsupported automation job")
     now = now or utcnow()
-    key = claim(factory, kind, now)
+    reporting_time = digest_business_day(now) if kind == "digest" else now
+    key = claim(factory, kind, now, slot_time=reporting_time)
     if key is None:
         return {"status": "already_claimed", "next_nominal_trt": next_nominal(now)}
     counts = {}
@@ -294,7 +313,7 @@ def run_once(kind, *, factory=SessionLocal, now=None, syncer=None, sender=_api):
         if kind == "sync":
             counts, status, code = (syncer(factory) if syncer else google_sync(factory, key))
         else:
-            counts, status, code = asyncio.run(daily_digest(factory, now, sender))
+            counts, status, code = asyncio.run(daily_digest(factory, reporting_time, sender))
         finish(factory, key, status, counts, code)
         return {"status": status, "error_code": code,
                 "counts": counts, "next_nominal_trt": next_nominal(now)}
