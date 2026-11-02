@@ -13,13 +13,13 @@ from datetime import timedelta, timezone
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
 from .auth import identity, membership
 from .config import get_settings
 from .db import get_db
-from .models import (Audit, Membership, Organization, Review, TelegramBinding,
+from .models import (Audit, Location, Membership, Organization, Review, TelegramBinding,
                      TelegramPairing, TelegramUpdate, utcnow)
 from .rate_limit import throttle
 
@@ -86,6 +86,7 @@ async def configure_bot() -> None:
         await _api('setMyCommands', {'commands': [
             {'command': 'start', 'description': 'YorumPilot hesabını bağla'},
             {'command': 'status', 'description': 'Bağlantı durumunu kontrol et'},
+            {'command': 'rapor', 'description': 'Bağlı işletmenin gerçek yorum özetini al'},
             {'command': 'help', 'description': 'Kullanım ve güvenlik bilgileri'}
         ]})
         log.info('Telegram bot webhook registered (credentials omitted)')
@@ -212,6 +213,40 @@ def _apply_action(db: Session, review_id: str, action: str, telegram_user_id: st
     return notice
 
 
+def _headless_report(db: Session, chat_id: str) -> str:
+    """Private, owner-bound aggregate only; no review text, names or credentials."""
+    bindings = db.scalars(select(TelegramBinding).where(
+        TelegramBinding.telegram_user_id == chat_id,
+        TelegramBinding.chat_id == chat_id,
+        TelegramBinding.enabled.is_(True)).limit(10)).all()
+    lines = []
+    for binding in bindings:
+        member = db.scalar(select(Membership).where(
+            Membership.organization_id == binding.organization_id,
+            Membership.user_id == binding.user_id,
+            Membership.role.in_(('owner', 'admin'))))
+        if member is None:
+            continue
+        org = db.get(Organization, binding.organization_id)
+        if org is None:
+            continue
+        real = (Review.organization_id == binding.organization_id,
+                Review.expires_at > utcnow(),
+                Location.is_demo.is_(False))
+        total = db.scalar(select(func.count(Review.id)).join(
+            Location, Location.id == Review.location_id).where(*real)) or 0
+        pending = db.scalar(select(func.count(Review.id)).join(
+            Location, Location.id == Review.location_id).where(
+                *real, Review.status.in_(('awaiting_approval', 'deferred')))) or 0
+        lines.append(f"{org.name[:80]}: gerçek yorum={total}, onay bekleyen={pending}")
+    if not lines:
+        return "🔒 Bağlı ve yetkili bir işletme bulunmuyor. Güvenli ilk eşleştirme gerekiyor."
+    return ("📊 YorumPilot — kayıtlı gerçek yorum özeti\n"
+            + "\n".join(lines)
+            + "\nDemo kayıtları hariçtir. Bu rapor yeni bir Google senkronizasyonu yapmaz;"
+              " Google yanıtı yayımlamaz.")
+
+
 async def _process_message(db: Session, message: dict):
     chat = message.get('chat') or {}
     sender = message.get('from') or {}
@@ -247,12 +282,14 @@ async def _process_message(db: Session, message: dict):
                 reply = '✅ YorumPilot hesabın bağlandı. Web panelinden test bildirimi gönderebilirsin. Google cevapları otomatik yayımlanmaz.'
         if not reply:
             reply = 'Bağlantı kodu geçersiz, kullanılmış veya süresi dolmuş. Web panelinden yeni kod oluştur.'
+    elif text == '/rapor':
+        reply = _headless_report(db, chat_id)
     elif text.startswith('/status'):
         linked = db.scalar(select(TelegramBinding).where(
             TelegramBinding.telegram_user_id == chat_id, TelegramBinding.enabled == True))
         reply = '✅ Bir YorumPilot hesabına bağlısın.' if linked else '⚪ Henüz bağlanmadın. Web panelindeki Ayarlar üzerinden bağlan.'
     else:
-        reply = 'YorumPilot AI botuna hoş geldin!\nÖnce web paneli → Ayarlar → Telegram Bağla.\n/status - bağlantı durumu\n/help - yardım\n🔒 Gerçek Google yayını kapalı.'
+        reply = 'YorumPilot AI botu\n/status - bağlantı durumu\n/rapor - gerçek yorum özeti\nİlk güvenli eşleştirme zorunludur. Google yayını kapalı.'
     try:
         await _api('sendMessage', {'chat_id':chat_id,'text':reply})
     except TelegramDeliveryError:

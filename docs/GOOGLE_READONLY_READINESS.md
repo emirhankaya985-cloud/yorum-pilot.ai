@@ -85,3 +85,20 @@ roll the YorumPilot API/Web code back to its prior commit and keep
 refuses a data-losing downgrade. Disable approval gate; preserve encrypted
 grants until owner authorizes revocation, then erase. Do not change
 `site-nobet-ai`, Gmail watcher, Telegram polling or SMTP.
+
+
+## Telegram-first/headless use
+
+Existing securely paired owner/admin Telegram chats may request `/rapor` without
+opening a dashboard. The command reads **metadata counts only** for the authorized
+organization and non-demo locations; it excludes synthetic data, review content,
+customer identities, OAuth credentials and tokens. It does **not** fetch new Google
+reviews, initiate a scheduled sync or publish replies. Unpaired chats cannot inspect
+tenant data; membership revocation removes access. Delivery is only attempted when
+the existing bot webhook is configured and the private chat is already bound.
+
+The frontend/API must not be deleted blindly: initial secure Telegram pairing and
+the Google OAuth callback/proxy still rely on these routes. First-time owner identity
+binding and Google's explicit OAuth consent cannot be bypassed by a background job.
+Existing public demo/API and Neon data remain untouched by this branch. No automatic
+SMTP is enabled.
