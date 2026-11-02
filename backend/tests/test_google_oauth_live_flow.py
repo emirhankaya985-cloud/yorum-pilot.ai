@@ -148,3 +148,38 @@ def test_demo_not_touched_and_no_unverified_location_mapping(approved, client, m
         entries = db.scalars(select(Location).where(Location.organization_id==org)).all()
         assert sum(l.is_demo for l in entries) == 1
         assert sum(not l.is_demo for l in entries) == 1
+
+
+def test_revoked_refresh_token_is_removed_from_database(approved, client, monkeypatch):
+    from fastapi import HTTPException
+    org, routes = approved
+    state = _start(client, org)
+    monkeypatch.setattr(routes, "_token_call", lambda _: {
+        "access_token":"synthetic", "refresh_token":"refresh-token-for-test",
+        "scope":"https://www.googleapis.com/auth/business.manage"})
+    callback = client.get(f"/api/organizations/{org}/google/callback",
+                          params={"state":state,"code":"synthetic-code"}, follow_redirects=False)
+    assert callback.status_code == 303
+
+    def revoked(_):
+        raise HTTPException(401, "Google authorization expired or revoked")
+    monkeypatch.setattr(routes, "_token_call", revoked)
+    response = client.get(f"/api/organizations/{org}/google/accounts")
+    assert response.status_code == 401
+    with client.db_factory() as db:
+        conn = db.get(GoogleConnection,org)
+        assert conn.refresh_ciphertext == ""
+        assert conn.revoked_at is not None
+
+
+def test_only_organization_owner_can_connect_google(approved, client):
+    from app.models import Membership
+    org, _ = approved
+    with client.db_factory() as db:
+        member = db.scalar(select(Membership).where(Membership.organization_id == org))
+        member.role = "viewer"
+        db.commit()
+    response = client.post(f"/api/organizations/{org}/google/start",
+                           headers=csrf(client))
+    assert response.status_code == 404
+    assert client.get(f"/api/organizations/{org}/google/status").status_code == 404
